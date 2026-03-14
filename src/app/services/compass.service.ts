@@ -13,9 +13,10 @@ export class CompassService implements OnDestroy {
   private bound = this.onOrientation.bind(this);
 
   // Low-pass filter on the unit-vector components — never touches angle arithmetic
-  private smoothSin = 0;
-  private smoothCos = 0;
-  private hasFirst  = false;
+  private smoothSin   = 0;
+  private smoothCos   = 0;
+  private hasFirst    = false;
+  private hasAbsolute = false; // true once we receive a georeferenced reading
   private readonly SMOOTH = 0.1; // 0 = frozen, 1 = raw
 
   constructor(private zone: NgZone) {}
@@ -65,14 +66,20 @@ export class CompassService implements OnDestroy {
     let headingDeg: number | null = null;
 
     if (e.webkitCompassHeading != null) {
-      // iOS Safari — clockwise from magnetic north
+      // iOS Safari — clockwise from magnetic north, inherently absolute
       headingDeg = e.webkitCompassHeading;
-    } else if (e.alpha != null) {
-      // Android: alpha is counter-clockwise → flip to clockwise
+      this.hasAbsolute = true;
+    } else if (e.absolute && e.alpha != null) {
+      // Android absolute — alpha is counter-clockwise → flip to clockwise
+      headingDeg = (360 - e.alpha) % 360;
+      this.hasAbsolute = true;
+    } else if (!this.hasAbsolute && e.alpha != null) {
+      // Relative fallback only if no absolute source has been seen yet
       headingDeg = (360 - e.alpha) % 360;
     }
 
     if (headingDeg === null) return;
+    if (this.hasAbsolute && !e.absolute) return; // discard relative readings once we have absolute
 
     // Convert to unit vector immediately — never work in angle space again
     const rad = (headingDeg * Math.PI) / 180;

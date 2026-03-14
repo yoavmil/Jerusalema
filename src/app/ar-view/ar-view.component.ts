@@ -25,7 +25,7 @@ import { CompassService, HeadingVector } from '../services/compass.service';
         <text x="32" y="58"  text-anchor="middle" fill="white"   font-size="7" font-family="sans-serif">S</text>
         <text x="56" y="35"  text-anchor="middle" fill="white"   font-size="7" font-family="sans-serif">E</text>
         <text x="8"  y="35"  text-anchor="middle" fill="white"   font-size="7" font-family="sans-serif">W</text>
-        <g [attr.transform]="'rotate(' + headingDeg + ' 32 32)'">
+        <g [attr.transform]="'rotate(' + (-headingDeg) + ' 32 32)'">
           <polygon points="32,10 29,32 32,28 35,32" fill="#ef4444"/>
           <polygon points="32,54 29,32 32,36 35,32" fill="rgba(255,255,255,0.5)"/>
         </g>
