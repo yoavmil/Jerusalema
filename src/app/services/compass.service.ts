@@ -11,16 +11,38 @@ export class CompassService implements OnDestroy {
 
   constructor(private zone: NgZone) {}
 
-  /** Requests iOS permission (no-op on Android) then starts listening. */
-  async start(): Promise<void> {
+  /**
+   * Requests iOS permission, starts listening, then waits up to 2 s for a
+   * real heading reading. Returns true if the compass is working, false if
+   * the device has no compass (e.g. a desktop PC).
+   */
+  async start(): Promise<boolean> {
+    if (typeof DeviceOrientationEvent === 'undefined') return false;
+
     const DOE = DeviceOrientationEvent as unknown as {
       requestPermission?: () => Promise<string>;
     };
     if (typeof DOE.requestPermission === 'function') {
-      try { await DOE.requestPermission(); } catch { /* user declined */ }
+      try { await DOE.requestPermission(); } catch { return false; }
     }
+
     window.addEventListener('deviceorientationabsolute', this.bound as EventListener, true);
     window.addEventListener('deviceorientation',         this.bound as EventListener, true);
+
+    // Wait up to 2 s for a real reading to confirm compass is available
+    const available = await new Promise<boolean>(resolve => {
+      const timeout = setTimeout(() => resolve(false), 2000);
+      const sub = this.heading$.subscribe(h => {
+        if (h !== null) {
+          clearTimeout(timeout);
+          sub.unsubscribe();
+          resolve(true);
+        }
+      });
+    });
+
+    if (!available) this.stop();
+    return available;
   }
 
   stop(): void {

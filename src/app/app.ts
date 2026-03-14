@@ -126,7 +126,12 @@ export class App {
 
     // 2. Compass
     this.loadingMsg = 'Starting compass…';
-    await this.compass.start();
+    const hasCompass = await this.compass.start();
+    if (!hasCompass) {
+      this.errorMsg = 'No compass detected. This app requires a device with a magnetometer (e.g. a smartphone).';
+      this.state    = 'error';
+      return;
+    }
 
     // 3. Show AR
     this.state = 'ar';
