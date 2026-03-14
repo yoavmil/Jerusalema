@@ -65,24 +65,29 @@ export class CompassService implements OnDestroy {
 
   ngOnDestroy() { this.stop(); }
 
-  // ── Android ────────────────────────────────────────────────────────
-  // deviceorientationabsolute gives alpha/beta/gamma earth-referenced.
-  // We apply tilt compensation so the result is stable regardless of
-  // how the phone is tilted (portrait, landscape, angled).
+  // ── Android ───────────────────────────────────────────────────────
+  // deviceorientationabsolute: alpha is already the earth-referenced
+  // azimuth by W3C spec — CCW from north, so compass = (360 - alpha).
+  // Do NOT apply tilt compensation here: alpha is absolute regardless
+  // of beta/gamma, and applying tilt math on top corrupts the result.
   private handleAbsolute(e: DeviceOrientationEvent): void {
-    if (!e.absolute || e.alpha === null) return;
-    this.feed(tiltCompensatedHeading(e.alpha, e.beta ?? 0, e.gamma ?? 0));
+    if (e.alpha === null) return;
+    this.feed((360 - e.alpha) % 360);
   }
 
-  // ── iOS ────────────────────────────────────────────────────────────
-  // webkitCompassHeading is already tilt-compensated by the OS.
-  // Ignore plain alpha from non-absolute deviceorientation events.
+  // ── iOS + fallback ─────────────────────────────────────────────────
+  // iOS Safari: webkitCompassHeading is OS-tilt-compensated — use directly.
+  // Some Android builds fire deviceorientation with e.absolute=true
+  // instead of the named deviceorientationabsolute event — handle those too.
   private handleRelative(
     e: DeviceOrientationEvent & { webkitCompassHeading?: number }
   ): void {
-    if (typeof e.webkitCompassHeading !== 'number') return;
-    if (!Number.isFinite(e.webkitCompassHeading))  return;
-    this.feed(e.webkitCompassHeading);
+    if (typeof e.webkitCompassHeading === 'number' && Number.isFinite(e.webkitCompassHeading)) {
+      this.feed(e.webkitCompassHeading);
+    } else if (e.absolute === true && e.alpha !== null && Number.isFinite(e.alpha!)) {
+      this.feed((360 - e.alpha!) % 360);
+    }
+    // else: relative reading — discard
   }
 
   // ── Shared filter ──────────────────────────────────────────────────
@@ -119,39 +124,3 @@ export class CompassService implements OnDestroy {
   }
 }
 
-/**
- * Tilt-compensated compass heading from W3C DeviceOrientationEvent angles.
- *
- * Raw alpha from deviceorientationabsolute is only correct when the phone is
- * flat. When held vertically the gravity vector tilts the effective axes, so
- * we must project through the full ZXY rotation matrix to recover the true
- * azimuth from north.
- *
- * Derivation: W3C DeviceOrientation spec, Appendix A "Worked Example".
- * https://www.w3.org/TR/orientation-event/#worked-example
- *
- * Verified for portrait (beta≈90°), landscape, and arbitrary tilt.
- * Returns clockwise degrees from magnetic north, range [0, 360).
- */
-function tiltCompensatedHeading(alpha: number, beta: number, gamma: number): number {
-  const a = alpha * DEG;
-  const b = beta  * DEG;
-  const g = gamma * DEG;
-
-  const cosA = Math.cos(a), sinA = Math.sin(a);
-  const sinB = Math.sin(b);
-  const cosG = Math.cos(g), sinG = Math.sin(g);
-
-  // Elements of the rotation matrix column that encodes north in device space
-  const x = cosA * sinG + sinA * sinB * cosG;
-  const y = sinA * sinG - cosA * sinB * cosG;
-
-  // Edge case: phone is flat (beta≈0, gamma≈0) so x,y both collapse to 0.
-  // Fall back to raw alpha, which IS the heading when the device is horizontal.
-  if (Math.abs(x) < 1e-4 && Math.abs(y) < 1e-4) {
-    return ((360 - alpha) % 360 + 360) % 360;
-  }
-
-  const heading = Math.atan2(-x, -y) / DEG;
-  return ((heading % 360) + 360) % 360;
-}
