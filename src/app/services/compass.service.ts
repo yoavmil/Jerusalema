@@ -42,9 +42,11 @@ export class CompassService implements OnDestroy {
       }
     }
 
-    // deviceorientation is the event Safari uses for webkitCompassHeading.
-    // On other browsers we will filter for e.absolute === true inside the handler.
-    window.addEventListener('deviceorientation', this.bound as EventListener, true);
+    // deviceorientationabsolute → Android Chrome (earth-referenced, e.absolute === true)
+    // deviceorientation          → iOS Safari (webkitCompassHeading); relative events are
+    //                              filtered out inside the handler
+    window.addEventListener('deviceorientationabsolute', this.bound as EventListener, true);
+    window.addEventListener('deviceorientation',         this.bound as EventListener, true);
 
     // Wait only for a real absolute heading.
     const available = await new Promise<boolean>((resolve) => {
@@ -64,7 +66,8 @@ export class CompassService implements OnDestroy {
   }
 
   stop(): void {
-    window.removeEventListener('deviceorientation', this.bound as EventListener, true);
+    window.removeEventListener('deviceorientationabsolute', this.bound as EventListener, true);
+    window.removeEventListener('deviceorientation',         this.bound as EventListener, true);
     this.available$.next(false);
   }
 
