@@ -9,6 +9,12 @@ export class CompassService implements OnDestroy {
 
   private bound = this.onOrientation.bind(this);
 
+  // Low-pass filter state (sin/cos components handle 0°/360° wraparound)
+  private smoothSin = 0;
+  private smoothCos = 0;
+  private hasFirst   = false;
+  private readonly SMOOTH = 0.1; // 0 = frozen, 1 = raw; 0.1 is responsive yet stable
+
   constructor(private zone: NgZone) {}
 
   /**
@@ -66,8 +72,18 @@ export class CompassService implements OnDestroy {
     }
 
     if (h !== null) {
-      // Emit outside Angular zone; components subscribe and drive rendering themselves
-      this.zone.runOutsideAngular(() => this.heading$.next(h));
+      const rad = (h * Math.PI) / 180;
+      if (!this.hasFirst) {
+        // Seed the filter with the first reading to avoid initial swing from 0
+        this.smoothSin = Math.sin(rad);
+        this.smoothCos = Math.cos(rad);
+        this.hasFirst  = true;
+      } else {
+        this.smoothSin = this.SMOOTH * Math.sin(rad) + (1 - this.SMOOTH) * this.smoothSin;
+        this.smoothCos = this.SMOOTH * Math.cos(rad) + (1 - this.SMOOTH) * this.smoothCos;
+      }
+      const smoothed = (Math.atan2(this.smoothSin, this.smoothCos) * 180 / Math.PI + 360) % 360;
+      this.zone.runOutsideAngular(() => this.heading$.next(smoothed));
     }
   }
 }
