@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Jerusalem Arrow</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, sans-serif; touch-action: none; }
+
+    #video-bg {
+      position: fixed; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; z-index: 0;
+    }
+
+    #canvas {
+      position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1;
+    }
+
+    /* ── Splash screen ── */
+    #overlay {
+      position: fixed; inset: 0; z-index: 20;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.88); color: #fff; padding: 2.5rem;
+      text-align: center; gap: 1rem;
+    }
+    #overlay .icon { font-size: 3.5rem; }
+    #overlay h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.5px; }
+    #overlay p { color: rgba(255,255,255,0.65); line-height: 1.6; font-size: 0.95rem; max-width: 300px; }
+    #start-btn {
+      margin-top: 0.5rem;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff; border: none; padding: 0.85rem 2.5rem;
+      border-radius: 50px; font-size: 1.05rem; font-weight: 600; cursor: pointer;
+      box-shadow: 0 4px 20px rgba(37,99,235,0.5);
+    }
+
+    /* ── HUD ── */
+    #hud {
+      position: fixed; top: env(safe-area-inset-top, 0); left: 0; right: 0; z-index: 10;
+      display: none; flex-direction: column; align-items: center; gap: 0.4rem;
+      padding: 0.75rem; pointer-events: none;
+    }
+    .pill {
+      background: rgba(0,0,0,0.45); backdrop-filter: blur(10px);
+      color: #fff; padding: 0.35rem 0.9rem; border-radius: 20px;
+      font-size: 0.82rem; white-space: nowrap;
+    }
+
+    /* ── Compass rose ── */
+    #compass-wrap {
+      position: fixed; bottom: calc(env(safe-area-inset-bottom, 0) + 1.5rem); right: 1.2rem;
+      z-index: 10; display: none; width: 64px; height: 64px;
+    }
+    #compass-rose {
+      width: 100%; height: 100%;
+      filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6));
+    }
+
+    /* ── No-compass notice ── */
+    #no-compass {
+      position: fixed; bottom: 6rem; left: 1rem; right: 1rem; z-index: 10;
+      display: none; background: rgba(234,179,8,0.9); color: #000;
+      border-radius: 12px; padding: 0.8rem 1rem; font-size: 0.85rem; text-align: center;
+    }
+
+    /* ── Error toast ── */
+    #error-toast {
+      position: fixed; bottom: 2rem; left: 1rem; right: 1rem; z-index: 30;
+      display: none; background: rgba(220,38,38,0.95); color: #fff;
+      border-radius: 12px; padding: 1rem; text-align: center; font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+
+<video id="video-bg" autoplay playsinline muted></video>
+<canvas id="canvas"></canvas>
+
+<!-- Splash -->
+<div id="overlay">
+  <div class="icon">🕍</div>
+  <h1>Jerusalem Arrow</h1>
+  <p>A golden arrow will appear on the floor, always pointing toward Jerusalem — no matter where you are on Earth.</p>
+  <button id="start-btn">Begin</button>
+</div>
+
+<!-- HUD -->
+<div id="hud">
+  <div class="pill" id="pill-dist">Locating…</div>
+  <div class="pill" id="pill-bearing">Compass calibrating…</div>
+</div>
+
+<!-- Compass rose SVG -->
+<div id="compass-wrap">
+  <svg id="compass-rose" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="32" cy="32" r="30" fill="rgba(0,0,0,0.4)" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+    <!-- N/S/E/W labels -->
+    <text x="32" y="11" text-anchor="middle" fill="#ef4444" font-size="9" font-weight="700" font-family="sans-serif">N</text>
+    <text x="32" y="58" text-anchor="middle" fill="white" font-size="7" font-family="sans-serif">S</text>
+    <text x="56" y="35" text-anchor="middle" fill="white" font-size="7" font-family="sans-serif">E</text>
+    <text x="8"  y="35" text-anchor="middle" fill="white" font-size="7" font-family="sans-serif">W</text>
+    <!-- Needle -->
+    <g id="needle" transform-origin="32 32">
+      <polygon points="32,10 29,32 32,28 35,32" fill="#ef4444"/>
+      <polygon points="32,54 29,32 32,36 35,32" fill="rgba(255,255,255,0.5)"/>
+    </g>
+  </svg>
+</div>
+
+<div id="no-compass">Compass not available — arrow direction uses last known heading</div>
+<div id="error-toast"></div>
+
+<script type="module">
+import * as THREE from 'https://cdn.skypack.dev/three@0.150.0';
+
+// ── Constants ───────────────────────────────────────────────────────
+const JERUSALEM = { lat: 31.7683, lng: 35.2137 };
+
+// ── State ───────────────────────────────────────────────────────────
+let bearing      = 0;   // clockwise degrees from north → Jerusalem
+let compassHead  = 0;   // clockwise degrees from north → device is facing
+let compassReady = false;
+
+let renderer, scene, camera, arrowGroup, glowMesh;
+
+// ── Geo math ────────────────────────────────────────────────────────
+const toRad = d => d * Math.PI / 180;
+const toDeg = r => r * 180 / Math.PI;
+
+function calcBearing(from, to) {
+  const dL = toRad(to.lng - from.lng);
+  const f1 = toRad(from.lat), f2 = toRad(to.lat);
+  const y = Math.sin(dL) * Math.cos(f2);
+  const x = Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dL);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function calcDistanceKm(from, to) {
+  const R = 6371;
+  const dLat = toRad(to.lat - from.lat);
+  const dLng = toRad(to.lng - from.lng);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(from.lat)) * Math.cos(toRad(to.lat)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ── 3-D arrow model ─────────────────────────────────────────────────
+function buildArrow() {
+  const group = new THREE.Group();
+
+  const gold = new THREE.MeshStandardMaterial({
+    color: 0xFFCC00, metalness: 0.55, roughness: 0.25, emissive: 0x3A2800,
+  });
+
+  // Shaft (cylinder, oriented along -Z)
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.55, 20), gold);
+  shaft.rotation.x = Math.PI / 2;
+  shaft.position.z = -0.275;
+  group.add(shaft);
+
+  // Arrowhead (cone tip at z = -0.7)
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.085, 0.22, 20), gold);
+  head.rotation.x = -Math.PI / 2;
+  head.position.z = -0.66;
+  group.add(head);
+
+  // Tail feathers
+  const tailMat = new THREE.MeshStandardMaterial({ color: 0xFFEE88, metalness: 0.3, roughness: 0.5 });
+  [-1, 1].forEach(sign => {
+    const feather = new THREE.Mesh(
+      new THREE.BoxGeometry(0.12, 0.01, 0.14),
+      tailMat
+    );
+    feather.position.set(sign * 0.06, 0, 0.02);
+    group.add(feather);
+  });
+
+  // Glow ring on the floor plane
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xFFCC00, transparent: true, opacity: 0.28, side: THREE.DoubleSide,
+  });
+  glowMesh = new THREE.Mesh(new THREE.RingGeometry(0.38, 0.48, 72), ringMat);
+  glowMesh.rotation.x = -Math.PI / 2;
+  group.add(glowMesh);
+
+  // Center dot
+  const dot = new THREE.Mesh(
+    new THREE.CircleGeometry(0.045, 32),
+    new THREE.MeshBasicMaterial({ color: 0xFFCC00, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
+  );
+  dot.rotation.x = -Math.PI / 2;
+  group.add(dot);
+
+  return group;
+}
+
+// ── Camera orientation event ─────────────────────────────────────────
+function handleOrientation(e) {
+  let h = null;
+  if (e.webkitCompassHeading != null) {
+    // iOS Safari — already clockwise from magnetic north
+    h = e.webkitCompassHeading;
+  } else if (e.alpha != null) {
+    // Android (absolute or relative): alpha is CCW from north → convert
+    h = (360 - e.alpha) % 360;
+  }
+  if (h === null) return;
+  compassHead  = h;
+  compassReady = true;
+
+  // Update compass rose needle
+  document.getElementById('needle').setAttribute(
+    'transform', `rotate(${-h} 32 32)`
+  );
+  document.getElementById('pill-bearing').textContent =
+    `Bearing ${Math.round(bearing)}° · Heading ${Math.round(compassHead)}°`;
+}
+
+// ── Boot sequence ────────────────────────────────────────────────────
+async function start() {
+  const btn = document.getElementById('start-btn');
+  btn.disabled = true; btn.textContent = 'Starting…';
+
+  // 1. Camera feed
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+    });
+    document.getElementById('video-bg').srcObject = stream;
+  } catch {
+    return showError('Camera permission required. Allow camera access and reload.');
+  }
+
+  // 2. Geolocation
+  try {
+    const pos = await new Promise((ok, fail) =>
+      navigator.geolocation.getCurrentPosition(ok, fail, { enableHighAccuracy: true, timeout: 15000 })
+    );
+    const here = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    bearing = calcBearing(here, JERUSALEM);
+    const km = Math.round(calcDistanceKm(here, JERUSALEM));
+    document.getElementById('pill-dist').textContent =
+      `Jerusalem · ${km.toLocaleString()} km away`;
+  } catch {
+    return showError('Location permission required. Allow location access and reload.');
+  }
+
+  // 3. Orientation / compass
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { await DeviceOrientationEvent.requestPermission(); } catch { /* user declined */ }
+  }
+  window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+  window.addEventListener('deviceorientation',         handleOrientation, true);
+  // Show no-compass warning after 3 s if still not getting data
+  setTimeout(() => {
+    if (!compassReady) document.getElementById('no-compass').style.display = 'block';
+  }, 3000);
+
+  // 4. Three.js renderer
+  const canvas = document.getElementById('canvas');
+  renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 0); // transparent bg → shows camera feed
+
+  // 5. Scene
+  scene = new THREE.Scene();
+  scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+  sun.position.set(2, 6, 3);
+  scene.add(sun);
+
+  // 6. Camera — placed at eye height, looking slightly downward
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 30);
+  camera.position.set(0, 1.55, 0);
+  camera.rotation.x = toRad(-25); // tilt down 25° so floor is visible
+
+  // 7. Arrow on the floor, 1.8 m in front of the camera origin
+  arrowGroup = buildArrow();
+  arrowGroup.position.set(0, 0, -1.8);
+  scene.add(arrowGroup);
+
+  // 8. Show UI
+  document.getElementById('overlay').style.display  = 'none';
+  document.getElementById('hud').style.display      = 'flex';
+  document.getElementById('compass-wrap').style.display = 'block';
+
+  renderer.setAnimationLoop(animate);
+  window.addEventListener('resize', onResize);
+}
+
+// ── Render loop ──────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+
+function animate() {
+  const t = clock.getElapsedTime();
+
+  if (arrowGroup) {
+    // Arrow points toward Jerusalem: rotate around world-Y by -(bearing - compassHead)
+    arrowGroup.rotation.y = -toRad(bearing - compassHead);
+
+    // Gentle hover float
+    arrowGroup.position.y = Math.sin(t * 1.1) * 0.04;
+
+    // Pulse the glow ring opacity
+    if (glowMesh) {
+      glowMesh.material.opacity = 0.18 + 0.15 * Math.sin(t * 2.2);
+    }
+  }
+
+  renderer.render(scene, camera);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function showError(msg) {
+  const el = document.getElementById('error-toast');
+  el.textContent = msg; el.style.display = 'block';
+  document.getElementById('overlay').style.display = 'none';
+  const btn = document.getElementById('start-btn');
+  btn.disabled = false; btn.textContent = 'Try Again';
+  document.getElementById('overlay').style.display = 'flex';
+}
+
+document.getElementById('start-btn').addEventListener('click', start);
+</script>
+</body>
+</html>
