@@ -3,9 +3,7 @@ import {
 } from '@angular/core';
 import { Subscription } from 'rxjs';
 import * as THREE from 'three';
-import { CompassService } from '../services/compass.service';
-
-const toRad = (d: number) => (d * Math.PI) / 180;
+import { CompassService, HeadingVector } from '../services/compass.service';
 
 @Component({
   selector: 'app-ar-view',
@@ -27,7 +25,7 @@ const toRad = (d: number) => (d * Math.PI) / 180;
         <text x="32" y="58"  text-anchor="middle" fill="white"   font-size="7" font-family="sans-serif">S</text>
         <text x="56" y="35"  text-anchor="middle" fill="white"   font-size="7" font-family="sans-serif">E</text>
         <text x="8"  y="35"  text-anchor="middle" fill="white"   font-size="7" font-family="sans-serif">W</text>
-        <g [attr.transform]="'rotate(' + (-compassHeading) + ' 32 32)'">
+        <g [attr.transform]="'rotate(' + headingDeg + ' 32 32)'">
           <polygon points="32,10 29,32 32,28 35,32" fill="#ef4444"/>
           <polygon points="32,54 29,32 32,36 35,32" fill="rgba(255,255,255,0.5)"/>
         </g>
@@ -74,13 +72,22 @@ export class ArViewComponent implements AfterViewInit, OnDestroy {
   @ViewChild('videoBg',     { static: true }) videoEl!: ElementRef<HTMLVideoElement>;
   @ViewChild('threeCanvas', { static: true }) canvasEl!: ElementRef<HTMLCanvasElement>;
 
-  /** Bearing to Jerusalem in clockwise degrees from north. */
-  @Input() bearing = 0;
+  /** Bearing to Jerusalem in clockwise degrees from north (converted to vector on set). */
+  @Input() set bearing(deg: number) {
+    const rad = (deg * Math.PI) / 180;
+    this.bearingVec = { sin: Math.sin(rad), cos: Math.cos(rad) };
+    this.bearingDeg = deg;
+  }
   /** Distance label text, e.g. "Jerusalem · 3 412 km away". */
   @Input() distLabel = '';
 
-  compassHeading = 0;
-  compassLabel   = 'Compass calibrating…';
+  compassLabel = 'Compass calibrating…';
+
+  private bearingVec: HeadingVector = { sin: 0, cos: 1 };
+  private bearingDeg = 0;
+  private headingVec: HeadingVector = { sin: 0, cos: 1 };
+  /** Heading in degrees — only used for template display, never for rotation math. */
+  headingDeg = 0;
 
   private renderer!: THREE.WebGLRenderer;
   private scene!:    THREE.Scene;
@@ -98,8 +105,10 @@ export class ArViewComponent implements AfterViewInit, OnDestroy {
     this.buildScene();
     this.sub = this.compass.heading$.subscribe(h => {
       if (h === null) return;
-      this.compassHeading = h;
-      this.compassLabel   = `Bearing ${Math.round(this.bearing)}°  ·  Heading ${Math.round(h)}°`;
+      this.headingVec = h;
+      // Convert to degrees only for display labels
+      this.headingDeg = (Math.atan2(h.sin, h.cos) * 180 / Math.PI + 360) % 360;
+      this.compassLabel = `Bearing ${Math.round(this.bearingDeg)}°  ·  Heading ${Math.round(this.headingDeg)}°`;
     });
     this.animate();
     window.addEventListener('resize', this.onResize);
@@ -136,7 +145,7 @@ export class ArViewComponent implements AfterViewInit, OnDestroy {
 
     this.camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 30);
     this.camera.position.set(0, 1.55, 0);
-    this.camera.rotation.x = toRad(-25); // tilt down so floor is visible
+    this.camera.rotation.x = -25 * Math.PI / 180; // tilt down so floor is visible
 
     this.arrow = this.buildArrow();
     this.arrow.position.set(0, 0, -1.8); // 1.8 m ahead on the floor
@@ -193,8 +202,13 @@ export class ArViewComponent implements AfterViewInit, OnDestroy {
     this.rafId = requestAnimationFrame(this.animate);
     const t = this.clock.getElapsedTime();
 
-    // Rotate arrow to point toward Jerusalem
-    this.arrow.rotation.y = -toRad(this.bearing - this.compassHeading);
+    // Rotate arrow to point toward Jerusalem using cross/dot products —
+    // no angle arithmetic, no 0°/360° singularity possible.
+    // cross(heading, bearing) = sin of the angle from heading to bearing
+    // dot(heading, bearing)   = cos of that angle
+    const { sin: hs, cos: hc } = this.headingVec;
+    const { sin: bs, cos: bc } = this.bearingVec;
+    this.arrow.rotation.y = Math.atan2(hs * bc - hc * bs, hc * bc + hs * bs);
     // Hover float
     this.arrow.position.y = Math.sin(t * 1.1) * 0.04;
     // Pulse glow

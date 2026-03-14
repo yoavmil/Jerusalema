@@ -1,19 +1,22 @@
 import { Injectable, NgZone, OnDestroy } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 
+/** Smoothed compass direction as a unit vector in the horizontal plane.
+ *  sin = east component, cos = north component (clockwise-from-north convention). */
+export interface HeadingVector { sin: number; cos: number; }
+
 @Injectable({ providedIn: 'root' })
 export class CompassService implements OnDestroy {
 
-  /** Current compass heading in clockwise degrees from magnetic north (0–360). */
-  readonly heading$ = new BehaviorSubject<number | null>(null);
+  readonly heading$ = new BehaviorSubject<HeadingVector | null>(null);
 
   private bound = this.onOrientation.bind(this);
 
-  // Low-pass filter state (sin/cos components handle 0°/360° wraparound)
+  // Low-pass filter on the unit-vector components — never touches angle arithmetic
   private smoothSin = 0;
   private smoothCos = 0;
-  private hasFirst   = false;
-  private readonly SMOOTH = 0.1; // 0 = frozen, 1 = raw; 0.1 is responsive yet stable
+  private hasFirst  = false;
+  private readonly SMOOTH = 0.1; // 0 = frozen, 1 = raw
 
   constructor(private zone: NgZone) {}
 
@@ -56,34 +59,39 @@ export class CompassService implements OnDestroy {
     window.removeEventListener('deviceorientation',         this.bound as EventListener, true);
   }
 
-  ngOnDestroy(): void {
-    this.stop();
-  }
+  ngOnDestroy(): void { this.stop(); }
 
   private onOrientation(e: DeviceOrientationEvent & { webkitCompassHeading?: number }): void {
-    let h: number | null = null;
+    let headingDeg: number | null = null;
 
     if (e.webkitCompassHeading != null) {
-      // iOS Safari — clockwise from magnetic north, ready to use
-      h = e.webkitCompassHeading;
+      // iOS Safari — clockwise from magnetic north
+      headingDeg = e.webkitCompassHeading;
     } else if (e.alpha != null) {
-      // Android (absolute or relative): alpha increases counter-clockwise → flip
-      h = (360 - e.alpha) % 360;
+      // Android: alpha is counter-clockwise → flip to clockwise
+      headingDeg = (360 - e.alpha) % 360;
     }
 
-    if (h !== null) {
-      const rad = (h * Math.PI) / 180;
-      if (!this.hasFirst) {
-        // Seed the filter with the first reading to avoid initial swing from 0
-        this.smoothSin = Math.sin(rad);
-        this.smoothCos = Math.cos(rad);
-        this.hasFirst  = true;
-      } else {
-        this.smoothSin = this.SMOOTH * Math.sin(rad) + (1 - this.SMOOTH) * this.smoothSin;
-        this.smoothCos = this.SMOOTH * Math.cos(rad) + (1 - this.SMOOTH) * this.smoothCos;
-      }
-      const smoothed = (Math.atan2(this.smoothSin, this.smoothCos) * 180 / Math.PI + 360) % 360;
-      this.zone.runOutsideAngular(() => this.heading$.next(smoothed));
+    if (headingDeg === null) return;
+
+    // Convert to unit vector immediately — never work in angle space again
+    const rad = (headingDeg * Math.PI) / 180;
+    const s   = Math.sin(rad);
+    const c   = Math.cos(rad);
+
+    if (!this.hasFirst) {
+      this.smoothSin = s;
+      this.smoothCos = c;
+      this.hasFirst  = true;
+    } else {
+      this.smoothSin = this.SMOOTH * s + (1 - this.SMOOTH) * this.smoothSin;
+      this.smoothCos = this.SMOOTH * c + (1 - this.SMOOTH) * this.smoothCos;
     }
+
+    // Normalize so it stays a proper unit vector despite floating-point drift
+    const len = Math.hypot(this.smoothSin, this.smoothCos);
+    this.zone.runOutsideAngular(() =>
+      this.heading$.next({ sin: this.smoothSin / len, cos: this.smoothCos / len })
+    );
   }
 }
