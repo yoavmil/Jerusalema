@@ -1,49 +1,57 @@
 import { Injectable, NgZone, OnDestroy } from '@angular/core';
 import { BehaviorSubject } from 'rxjs';
 
-/** Smoothed compass direction as a unit vector in the horizontal plane.
- *  sin = east component, cos = north component (clockwise-from-north convention). */
-export interface HeadingVector { sin: number; cos: number; }
+export interface HeadingVector {
+  sin: number; // east
+  cos: number; // north
+}
 
 @Injectable({ providedIn: 'root' })
 export class CompassService implements OnDestroy {
-
   readonly heading$ = new BehaviorSubject<HeadingVector | null>(null);
+  readonly available$ = new BehaviorSubject<boolean>(false);
 
   private bound = this.onOrientation.bind(this);
 
-  // Low-pass filter on the unit-vector components — never touches angle arithmetic
-  private smoothSin   = 0;
-  private smoothCos   = 0;
-  private hasFirst    = false;
-  private hasAbsolute = false; // true once we receive a georeferenced reading
-  private readonly SMOOTH = 0.1; // 0 = frozen, 1 = raw
+  private smoothSin = 0;
+  private smoothCos = 0;
+  private hasFirst = false;
+
+  private readonly SMOOTH = 0.15;
 
   constructor(private zone: NgZone) {}
 
-  /**
-   * Requests iOS permission, starts listening, then waits up to 2 s for a
-   * real heading reading. Returns true if the compass is working, false if
-   * the device has no compass (e.g. a desktop PC).
-   */
   async start(): Promise<boolean> {
-    if (typeof DeviceOrientationEvent === 'undefined') return false;
+    this.stop();
+    this.reset();
 
-    const DOE = DeviceOrientationEvent as unknown as {
-      requestPermission?: () => Promise<string>;
-    };
-    if (typeof DOE.requestPermission === 'function') {
-      try { await DOE.requestPermission(); } catch { return false; }
+    if (typeof window === 'undefined' || typeof DeviceOrientationEvent === 'undefined') {
+      return false;
     }
 
-    window.addEventListener('deviceorientationabsolute', this.bound as EventListener, true);
-    window.addEventListener('deviceorientation',         this.bound as EventListener, true);
+    const DOE = DeviceOrientationEvent as typeof DeviceOrientationEvent & {
+      requestPermission?: () => Promise<'granted' | 'denied'>;
+    };
 
-    // Wait up to 2 s for a real reading to confirm compass is available
-    const available = await new Promise<boolean>(resolve => {
-      const timeout = setTimeout(() => resolve(false), 2000);
-      const sub = this.heading$.subscribe(h => {
-        if (h !== null) {
+    if (typeof DOE.requestPermission === 'function') {
+      try {
+        const permission = await DOE.requestPermission();
+        if (permission !== 'granted') return false;
+      } catch {
+        return false;
+      }
+    }
+
+    // deviceorientation is the event Safari uses for webkitCompassHeading.
+    // On other browsers we will filter for e.absolute === true inside the handler.
+    window.addEventListener('deviceorientation', this.bound as EventListener, true);
+
+    // Wait only for a real absolute heading.
+    const available = await new Promise<boolean>((resolve) => {
+      const timeout = window.setTimeout(() => resolve(false), 2500);
+
+      const sub = this.available$.subscribe((ok) => {
+        if (ok) {
           clearTimeout(timeout);
           sub.unsubscribe();
           resolve(true);
@@ -56,49 +64,68 @@ export class CompassService implements OnDestroy {
   }
 
   stop(): void {
-    window.removeEventListener('deviceorientationabsolute', this.bound as EventListener, true);
-    window.removeEventListener('deviceorientation',         this.bound as EventListener, true);
+    window.removeEventListener('deviceorientation', this.bound as EventListener, true);
+    this.available$.next(false);
   }
 
-  ngOnDestroy(): void { this.stop(); }
+  ngOnDestroy(): void {
+    this.stop();
+  }
 
-  private onOrientation(e: DeviceOrientationEvent & { webkitCompassHeading?: number }): void {
+  private reset(): void {
+    this.smoothSin = 0;
+    this.smoothCos = 0;
+    this.hasFirst = false;
+    this.heading$.next(null);
+    this.available$.next(false);
+  }
+
+  private onOrientation(
+    e: DeviceOrientationEvent & { webkitCompassHeading?: number; webkitCompassAccuracy?: number }
+  ): void {
     let headingDeg: number | null = null;
 
-    if (e.webkitCompassHeading != null) {
-      // iOS Safari — clockwise from magnetic north, inherently absolute
-      headingDeg = e.webkitCompassHeading;
-      this.hasAbsolute = true;
-    } else if (e.absolute && e.alpha != null) {
-      // Android absolute — alpha is counter-clockwise → flip to clockwise
-      headingDeg = (360 - e.alpha) % 360;
-      this.hasAbsolute = true;
-    } else if (!this.hasAbsolute && e.alpha != null) {
-      // Relative fallback only if no absolute source has been seen yet
-      headingDeg = (360 - e.alpha) % 360;
+    // iOS Safari: this is the real compass heading, clockwise from north.
+    if (typeof e.webkitCompassHeading === 'number' && Number.isFinite(e.webkitCompassHeading)) {
+      headingDeg = normalizeDeg(e.webkitCompassHeading);
+    }
+    // Other browsers: accept only Earth-referenced readings.
+    else if (e.absolute === true && typeof e.alpha === 'number' && Number.isFinite(e.alpha)) {
+      headingDeg = normalizeDeg(360 - e.alpha);
+    } else {
+      // Ignore relative / arbitrary-frame readings.
+      return;
     }
 
-    if (headingDeg === null) return;
-    if (this.hasAbsolute && !e.absolute) return; // discard relative readings once we have absolute
-
-    // Convert to unit vector immediately — never work in angle space again
-    const rad = (headingDeg * Math.PI) / 180;
-    const s   = Math.sin(rad);
-    const c   = Math.cos(rad);
+    const rad = headingDeg * Math.PI / 180;
+    const s = Math.sin(rad);
+    const c = Math.cos(rad);
 
     if (!this.hasFirst) {
       this.smoothSin = s;
       this.smoothCos = c;
-      this.hasFirst  = true;
+      this.hasFirst = true;
     } else {
       this.smoothSin = this.SMOOTH * s + (1 - this.SMOOTH) * this.smoothSin;
       this.smoothCos = this.SMOOTH * c + (1 - this.SMOOTH) * this.smoothCos;
     }
 
-    // Normalize so it stays a proper unit vector despite floating-point drift
     const len = Math.hypot(this.smoothSin, this.smoothCos);
-    this.zone.runOutsideAngular(() =>
-      this.heading$.next({ sin: this.smoothSin / len, cos: this.smoothCos / len })
-    );
+    if (len < 1e-6) return;
+
+    const value: HeadingVector = {
+      sin: this.smoothSin / len,
+      cos: this.smoothCos / len,
+    };
+
+    // Usually better for Angular consumers than runOutsideAngular here.
+    this.zone.run(() => {
+      this.available$.next(true);
+      this.heading$.next(value);
+    });
   }
+}
+
+function normalizeDeg(deg: number): number {
+  return ((deg % 360) + 360) % 360;
 }
