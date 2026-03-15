@@ -2,7 +2,7 @@ import { Injectable } from '@angular/core';
 
 export interface LatLng { lat: number; lng: number; }
 
-const JERUSALEM: LatLng = { lat: 31.7683, lng: 35.2137 };
+const JERUSALEM: LatLng = { lat: 31.778124385518566, lng: 35.23540405170557 };
 
 const toRad = (d: number) => (d * Math.PI) / 180;
 const toDeg = (r: number) => (r * 180) / Math.PI;
