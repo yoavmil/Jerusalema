@@ -1,10 +1,11 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { GeoService } from './services/geo.service';
 import { CompassService } from './services/compass.service';
 import { ArViewComponent } from './ar-view/ar-view.component';
 import { SensorPlotComponent } from './sensor-plot/sensor-plot.component';
 
-type AppState = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
+type AppState    = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
+type CompassProbe = 'checking' | 'absolute' | 'ios-needs-permission' | 'none';
 
 @Component({
   selector: 'app-root',
@@ -25,6 +26,24 @@ type AppState = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
           <div class="icon">🕍</div>
           <h1>Jerusalem Arrow</h1>
           <p>A golden arrow will appear on the floor, always pointing toward Jerusalem — no matter where you are on Earth.</p>
+
+          <!-- Compass probe status chip -->
+          <div class="chip" [class]="'chip--' + compassProbe">
+            @switch (compassProbe) {
+              @case ('checking') {
+                <span class="dot dot--spin"></span> Detecting compass…
+              }
+              @case ('absolute') {
+                <span class="dot dot--ok"></span> Absolute compass detected
+              }
+              @case ('ios-needs-permission') {
+                <span class="dot dot--warn"></span> Compass: permission required on first tap
+              }
+              @case ('none') {
+                <span class="dot dot--err"></span> No absolute compass — app may not work correctly
+              }
+            }
+          </div>
 
           @if (state === 'splash' || state === 'error') {
             <button (click)="start()" class="btn">
@@ -71,6 +90,31 @@ type AppState = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
 
     p { color: rgba(255,255,255,0.65); line-height: 1.6; font-size: 0.95rem; margin: 0; }
 
+    /* compass probe chip */
+    .chip {
+      display: flex; align-items: center; gap: 0.45rem;
+      font-size: 0.8rem; padding: 0.35rem 0.8rem; border-radius: 20px;
+      border: 1px solid transparent;
+    }
+    .chip--checking  { color: rgba(255,255,255,0.5);  border-color: rgba(255,255,255,0.15); }
+    .chip--absolute  { color: #4ade80; border-color: rgba(74,222,128,0.35);
+                       background: rgba(74,222,128,0.08); }
+    .chip--ios-needs-permission { color: #fbbf24; border-color: rgba(251,191,36,0.35);
+                       background: rgba(251,191,36,0.08); }
+    .chip--none      { color: #f87171; border-color: rgba(248,113,113,0.35);
+                       background: rgba(248,113,113,0.08); }
+
+    .dot {
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }
+    .dot--ok   { background: #4ade80; }
+    .dot--warn { background: #fbbf24; }
+    .dot--err  { background: #f87171; }
+    .dot--spin {
+      border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+
     .btn {
       margin-top: 0.5rem;
       background: linear-gradient(135deg, #2563eb, #1d4ed8);
@@ -92,8 +136,7 @@ type AppState = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
     .spinner {
       width: 36px; height: 36px;
       border: 3px solid rgba(255,255,255,0.2);
-      border-top-color: #fff;
-      border-radius: 50%;
+      border-top-color: #fff; border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
 
@@ -107,17 +150,21 @@ type AppState = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
     }
   `],
 })
-export class App {
+export class App implements OnInit {
 
-  state: AppState = 'splash';
+  state: AppState      = 'splash';
+  compassProbe: CompassProbe = 'checking';
   loadingMsg = '';
   errorMsg   = '';
   bearing    = 0;
   distLabel  = '';
 
   constructor(private geo: GeoService, private compass: CompassService) {
-    // Lock to portrait on browsers that support it (Chrome/Android)
     (screen.orientation as any)?.lock?.('portrait').catch(() => {});
+  }
+
+  ngOnInit(): void {
+    this.probeCompass();
   }
 
   async start(): Promise<void> {
@@ -151,5 +198,48 @@ export class App {
 
     // 3. Show AR
     this.state = 'ar';
+  }
+
+  // ── Compass capability probe ────────────────────────────────────────────
+  // Runs silently on the splash screen without requesting any permission.
+  // iOS 13+: DeviceOrientationEvent.requestPermission exists → we know a
+  //   hardware compass may be present but can't fire events without asking.
+  // Android / desktop: listen for 3 s; absolute data arrives → green.
+  private async probeCompass(): Promise<void> {
+    if (typeof DeviceOrientationEvent === 'undefined') {
+      this.compassProbe = 'none';
+      return;
+    }
+
+    // iOS requires an explicit user-gesture permission before any events fire
+    const DOE = DeviceOrientationEvent as any;
+    if (typeof DOE.requestPermission === 'function') {
+      this.compassProbe = 'ios-needs-permission';
+      return;
+    }
+
+    // Non-iOS: listen for absolute data for up to 3 seconds
+    const found = await new Promise<boolean>(resolve => {
+      const timer = setTimeout(() => { cleanup(); resolve(false); }, 3000);
+
+      const onAbsolute = () => { clearTimeout(timer); cleanup(); resolve(true); };
+
+      const onRelative = (ev: Event) => {
+        const e = ev as DeviceOrientationEvent & { webkitCompassHeading?: number };
+        if (e.absolute === true || typeof e.webkitCompassHeading === 'number') {
+          clearTimeout(timer); cleanup(); resolve(true);
+        }
+      };
+
+      const cleanup = () => {
+        window.removeEventListener('deviceorientationabsolute', onAbsolute, true);
+        window.removeEventListener('deviceorientation',         onRelative, true);
+      };
+
+      window.addEventListener('deviceorientationabsolute', onAbsolute, true);
+      window.addEventListener('deviceorientation',         onRelative, true);
+    });
+
+    this.compassProbe = found ? 'absolute' : 'none';
   }
 }
