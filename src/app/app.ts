@@ -49,9 +49,7 @@ type CompassProbe = 'checking' | 'absolute' | 'ios-needs-permission' | 'none';
             <button (click)="start()" class="btn">
               {{ state === 'error' ? 'Try Again' : 'Begin' }}
             </button>
-            <button (click)="state = 'debug'" class="btn-debug">
-              Debug sensors
-            </button>
+
           }
 
           @if (state === 'loading') {
