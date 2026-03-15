@@ -66,13 +66,15 @@ export class CompassService implements OnDestroy {
   ngOnDestroy() { this.stop(); }
 
   // ── Android ───────────────────────────────────────────────────────
-  // deviceorientationabsolute: alpha is already the earth-referenced
-  // azimuth by W3C spec — CCW from north, so compass = (360 - alpha).
-  // Do NOT apply tilt compensation here: alpha is absolute regardless
-  // of beta/gamma, and applying tilt math on top corrupts the result.
+  // deviceorientationabsolute gives us absolute Euler angles (α,β,γ).
+  // We reconstruct the camera direction (-Z in device frame) in world
+  // coordinates using the full rotation matrix R = Rz(α)·Rx(β)·Ry(γ),
+  // then project onto the horizontal plane to get the true azimuth.
+  // This is correct at any phone tilt (no gimbal-lock at β≈90°).
   private handleAbsolute(e: DeviceOrientationEvent): void {
-    if (e.alpha === null) return;
-    this.feed((360 - e.alpha) % 360);
+    if (e.alpha === null || e.beta === null || e.gamma === null) return;
+    const h = this.tiltCompensatedHeading(e.alpha, e.beta, e.gamma);
+    if (Number.isFinite(h)) this.feed(h);
   }
 
   // ── iOS + fallback ─────────────────────────────────────────────────
@@ -84,10 +86,34 @@ export class CompassService implements OnDestroy {
   ): void {
     if (typeof e.webkitCompassHeading === 'number' && Number.isFinite(e.webkitCompassHeading)) {
       this.feed(e.webkitCompassHeading);
-    } else if (e.absolute === true && e.alpha !== null && Number.isFinite(e.alpha!)) {
-      this.feed((360 - e.alpha!) % 360);
+    } else if (e.absolute === true && e.alpha !== null && e.beta !== null && e.gamma !== null) {
+      const h = this.tiltCompensatedHeading(e.alpha, e.beta, e.gamma);
+      if (Number.isFinite(h)) this.feed(h);
     }
     // else: relative reading — discard
+  }
+
+  // ── Tilt-compensated azimuth ───────────────────────────────────────
+  // Projects the camera direction (-Z_device) into world coordinates via
+  // R = Rz(α)·Rx(β)·Ry(γ)  (W3C intrinsic ZXY, device → world frame).
+  // World axes: X = East, Y = North, Z = Up.
+  // Returns clockwise-from-North degrees, or NaN when camera faces
+  // nearly straight down (phone flat — heading is undefined).
+  private tiltCompensatedHeading(aDeg: number, bDeg: number, gDeg: number): number {
+    const a = aDeg * DEG, b = bDeg * DEG, g = gDeg * DEG;
+    const sa = Math.sin(a), ca = Math.cos(a);
+    const sb = Math.sin(b);
+    const sg = Math.sin(g), cg = Math.cos(g);
+
+    // Camera direction in world = R · [0, 0, -1]  →  -(third column of R)
+    const east  = -(ca * sg + sa * cg * sb);
+    const north =   ca * cg * sb - sa * sg;
+
+    // If the horizontal component is negligible the phone is nearly flat;
+    // heading is undefined so we skip the reading.
+    if (Math.hypot(east, north) < 0.1) return NaN;
+
+    return (Math.atan2(east, north) / DEG + 360) % 360;
   }
 
   // ── Shared filter ──────────────────────────────────────────────────

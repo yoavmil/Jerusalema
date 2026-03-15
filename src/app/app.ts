@@ -2,19 +2,24 @@ import { Component } from '@angular/core';
 import { GeoService } from './services/geo.service';
 import { CompassService } from './services/compass.service';
 import { ArViewComponent } from './ar-view/ar-view.component';
+import { SensorPlotComponent } from './sensor-plot/sensor-plot.component';
 
-type AppState = 'splash' | 'loading' | 'ar' | 'error';
+type AppState = 'splash' | 'loading' | 'ar' | 'error' | 'debug';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [ArViewComponent],
+  imports: [ArViewComponent, SensorPlotComponent],
   template: `
     @if (state === 'ar') {
       <app-ar-view [bearing]="bearing" [distLabel]="distLabel" />
     }
 
-    @if (state !== 'ar') {
+    @if (state === 'debug') {
+      <app-sensor-plot (close)="state = 'splash'" />
+    }
+
+    @if (state !== 'ar' && state !== 'debug') {
       <div class="overlay">
         <div class="card">
           <div class="icon">🕍</div>
@@ -24,6 +29,9 @@ type AppState = 'splash' | 'loading' | 'ar' | 'error';
           @if (state === 'splash' || state === 'error') {
             <button (click)="start()" class="btn">
               {{ state === 'error' ? 'Try Again' : 'Begin' }}
+            </button>
+            <button (click)="state = 'debug'" class="btn-debug">
+              Debug sensors
             </button>
           }
 
@@ -71,6 +79,11 @@ type AppState = 'splash' | 'loading' | 'ar' | 'error';
       box-shadow: 0 4px 20px rgba(37, 99, 235, 0.5);
     }
 
+    .btn-debug {
+      background: none; color: rgba(255,255,255,0.35); border: 1px solid rgba(255,255,255,0.2);
+      padding: 0.5rem 1.5rem; border-radius: 50px; font-size: 0.85rem; cursor: pointer;
+    }
+
     .spinner-wrap {
       display: flex; flex-direction: column; align-items: center; gap: 0.75rem;
       color: rgba(255,255,255,0.7); font-size: 0.9rem;
@@ -102,7 +115,10 @@ export class App {
   bearing    = 0;
   distLabel  = '';
 
-  constructor(private geo: GeoService, private compass: CompassService) {}
+  constructor(private geo: GeoService, private compass: CompassService) {
+    // Lock to portrait on browsers that support it (Chrome/Android)
+    (screen.orientation as any)?.lock?.('portrait').catch(() => {});
+  }
 
   async start(): Promise<void> {
     this.errorMsg = '';
